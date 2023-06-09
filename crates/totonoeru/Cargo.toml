@@ -1,0 +1,12 @@
+[package]
+name = "totonoeru"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1.0.164"
+totonoeru_derive = { path = "../totonoeru_derive" }
+
+[dev-dependencies]
+toml = "0.7.4"
+
