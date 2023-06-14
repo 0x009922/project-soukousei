@@ -1,3 +1,4 @@
+use crate::env::EnvProvider;
 use serde::{Deserialize, Deserializer};
 pub use totonoeru_derive::Config;
 
@@ -8,6 +9,19 @@ pub mod env {
         type FetchError;
 
         fn fetch(&self, key: impl AsRef<str>) -> Result<Option<String>, Self::FetchError>;
+
+        fn fetch_from_iter(
+            &self,
+            iter: impl Iterator<Item = impl AsRef<str>>,
+        ) -> Result<Option<String>, Self::FetchError> {
+            for var_name in iter {
+                let found = self.fetch(var_name)?;
+                if found.is_some() {
+                    return Ok(found);
+                };
+            }
+            Ok(None)
+        }
     }
 
     pub struct StdEnv;
@@ -48,19 +62,21 @@ pub trait Partial {
     type Resolved;
 
     /// Construct a partial with all empty fields.
-    fn empty() -> Self;
+    fn new() -> Self;
 
     /// Construct a partial with default values.
+    ///
+    /// TODO: move to `Default` trait?
     fn default() -> Self;
 
-    /// Construct a partial from a [`Deserializer`]
-    fn parse<'de, D>(deserializer: D) -> Result<Self, ParseError>
-    where
-        D: Deserializer<'de>,
-        Self: Deserialize<'de>;
+    // /// Construct a partial from a [`Deserializer`]
+    // fn parse<'de, D>(deserializer: D) -> Result<Self, ParseError>
+    // where
+    //     D: Deserializer<'de>,
+    //     Self: Deserialize<'de>;
 
     /// Construct a partial from environment variables.
-    fn parse_env<P, E>(provider: P) -> Result<Self, E>
+    fn from_env<P, E>(provider: &P) -> Result<Self, E>
     where
         Self: Sized,
         P: env::EnvProvider<FetchError = E>;
@@ -74,27 +90,85 @@ pub trait Partial {
     /// of [`Option`]s.
     fn resolve(self) -> Result<Self::Resolved, ResolveError>;
 
-    /// Shorthand for parsing the same partial ([`Self::parse`]) and merging the result
-    /// ([`Self::merge`]).
-    fn parse_and_merge<'de, D>(self, deserializer: D) -> Result<Self, ParseError>
-    where
-        D: Deserializer<'de>,
-        Self: Deserialize<'de>,
-    {
-        Self::parse(deserializer).map(|parsed| self.merge(parsed))
+    // /// Shorthand for parsing the same partial ([`Self::parse`]) and merging the result
+    // /// ([`Self::merge`]).
+    // fn parse_and_merge<'de, D>(self, deserializer: D) -> Result<Self, ParseError>
+    // where
+    //     D: Deserializer<'de>,
+    //     Self: Deserialize<'de>,
+    // {
+    //     Self::parse(deserializer).map(|parsed| self.merge(parsed))
+    // }
+    //
+    // /// Shorthand for parsing the same partial from env ([`Self::from_env`]) and merging
+    // /// the result ([`Self::merge`]).
+    // fn parse_env_and_merge<P, E>(self, provider: P) -> Result<Self, E>
+    // where
+    //     Self: Sized,
+    //     P: env::EnvProvider<FetchError = E>,
+    // {
+    //     Self::from_env(provider).map(|parsed| self.merge(parsed))
+    // }
+}
+
+/// By default, all partial fields are options or nested partials. This implementation
+/// is a stub for any [`Option`].
+impl<T> Partial for Option<T> {
+    type Resolved = T;
+
+    fn new() -> Self {
+        None
     }
 
-    /// Shorthand for parsing the same partial from env ([`Self::parse_env`]) and merging
-    /// the result ([`Self::merge`]).
-    fn parse_env_and_merge<P, E>(self, provider: P) -> Result<Self, E>
+    fn default() -> Self {
+        None
+    }
+
+    fn from_env<P, E>(_provider: &P) -> Result<Self, E>
     where
         Self: Sized,
-        P: env::EnvProvider<FetchError = E>,
+        P: EnvProvider<FetchError = E>,
     {
-        Self::parse_env(provider).map(|parsed| self.merge(parsed))
+        Ok(None)
     }
+
+    fn merge(self, other: Self) -> Self {
+        other.or(self)
+    }
+
+    fn resolve(self) -> Result<Self::Resolved, ResolveError> {
+        self.ok_or(ResolveError::new())
+    }
+}
+
+pub trait HasPartial {
+    type Partial: Partial<Resolved = Self>;
 }
 
 pub struct ParseError;
 
-pub struct ResolveError;
+#[derive(Debug)]
+pub struct ResolveError {
+    pub path: Vec<&'static str>,
+}
+
+impl ResolveError {
+    pub fn new() -> Self {
+        Self { path: Vec::new() }
+    }
+
+    pub fn with_loc(mut self, loc: &'static str) -> Self {
+        self.path.push(loc);
+        self
+    }
+}
+
+pub trait ResolveErrorResultExt {
+    fn with_loc(self, loc: &'static str) -> Self;
+}
+
+impl<T> ResolveErrorResultExt for Result<T, ResolveError> {
+    fn with_loc(self, loc: &'static str) -> Self {
+        self.map_err(|err| err.with_loc(loc))
+    }
+}

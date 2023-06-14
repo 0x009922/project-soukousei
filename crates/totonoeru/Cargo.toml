@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = "1.0.164"
+serde = { version = "1.0.164", features = ["derive"] }
 totonoeru_derive = { path = "../totonoeru_derive" }
 
 [dev-dependencies]

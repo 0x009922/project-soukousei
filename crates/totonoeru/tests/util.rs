@@ -12,7 +12,7 @@ impl TestEnv {
         }
     }
 
-    pub fn add(mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> self {
+    pub fn add(mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         self.map
             .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
         self
