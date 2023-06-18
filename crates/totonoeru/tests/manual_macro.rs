@@ -2,11 +2,11 @@ extern crate core;
 
 mod util;
 
+use miette::{miette, IntoDiagnostic, Report, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
-use totonoeru::{env::EnvProvider, HasPartial, Partial, ResolveErrorResultExt};
-use totonoeru::{Config, ResolveError};
+use totonoeru::{env::EnvProvider, HasPartial, MissingFieldsError, Partial};
 use util::TestEnv;
 
 #[derive(Debug)]
@@ -39,10 +39,9 @@ impl Partial for CustomPartial {
         Self(Some(100))
     }
 
-    fn from_env<P, E>(_provider: &P) -> Result<Self, E>
+    fn from_env(_provider: &impl EnvProvider) -> Result<Self, Report>
     where
         Self: Sized,
-        P: EnvProvider<FetchError = E>,
     {
         Ok(Self::new())
     }
@@ -58,12 +57,12 @@ impl Partial for CustomPartial {
         Self(inner)
     }
 
-    fn resolve(self) -> Result<Self::Resolved, ResolveError> {
+    fn resolve(self) -> Result<Self::Resolved, MissingFieldsError> {
         self.0.resolve()
     }
 }
 
-// what macro should generate
+// MACRO OUTPUT
 
 impl HasPartial for Sample {
     type Partial = SamplePartial;
@@ -103,11 +102,12 @@ impl Partial for SamplePartial {
         }
     }
 
-    fn from_env<P, E>(provider: &P) -> Result<Self, E>
+    fn from_env(provider: &impl EnvProvider) -> Result<Self, Report>
     where
         Self: Sized,
-        P: EnvProvider<FetchError = E>,
     {
+        // TODO: collect errors in a batch?
+
         Ok(Self {
             with_default_foo: None,
             optional_bar: None,
@@ -127,20 +127,47 @@ impl Partial for SamplePartial {
         }
     }
 
-    fn resolve(self) -> Result<Self::Resolved, ResolveError> {
+    fn resolve(self) -> Result<Self::Resolved, MissingFieldsError> {
+        let mut missing_fields = MissingFieldsError::dummy();
+
+        if self.with_default_foo.is_none() {
+            missing_fields = missing_fields.add_field("with_default_foo")
+        }
+
+        if self.required_baz.is_none() {
+            missing_fields = missing_fields.add_field("required_baz")
+        }
+
+        let nested = match self.nested.resolve() {
+            Ok(value) => Some(value),
+            Err(err) => {
+                missing_fields = missing_fields.nest("nested", err);
+                None
+            }
+        };
+
+        let custom = match self.custom.resolve() {
+            Ok(value) => Some(value),
+            Err(err) => {
+                missing_fields = missing_fields.nest("custom", err);
+                None
+            }
+        };
+
+        missing_fields.result()?;
+
         Ok(Self::Resolved {
-            with_default_foo: self
-                .with_default_foo
-                .ok_or(ResolveError::new().with_loc("with_default_foo"))?,
+            // TODO: use `expect` in macro code
+            with_default_foo: self.with_default_foo.unwrap(),
             optional_bar: self.optional_bar,
-            required_baz: self
-                .required_baz
-                .ok_or(ResolveError::new().with_loc("required_baz"))?,
-            nested: self.nested.resolve().with_loc("nested")?,
-            custom: self.custom.resolve().with_loc("custom")?,
+            required_baz: self.required_baz.unwrap(),
+            nested: nested.unwrap(),
+            custom: custom.unwrap(),
         })
     }
 }
+
+// MACRO OUTPUT END
 
 // #[derive(Config)]
 #[derive(Debug)]
@@ -150,6 +177,8 @@ struct Nested {
     // #[param(env = ["SPECIFIC_BAR", "BAR"])]
     bar_env_multiple: Option<u32>,
 }
+
+// MACRO OUTPUT
 
 impl HasPartial for Nested {
     type Partial = NestedPartial;
@@ -178,19 +207,28 @@ impl Partial for NestedPartial {
         }
     }
 
-    fn from_env<P, E>(provider: &P) -> Result<Self, E>
+    fn from_env(provider: &impl EnvProvider) -> Result<Self, Report>
     where
         Self: Sized,
-        P: EnvProvider<FetchError = E>,
     {
         Ok(Self {
+            // TODO: specify path to variables as well
             foo_env: provider.fetch("FOO")?,
             bar_env_multiple: {
                 provider
-                    .fetch_from_iter(["SPECIFIC_BAR", "BAR"].iter())?
-                    .map(|x|
-                    // FIXME: add a way to handle parsing errors as well
-                    u32::from_str(&x).unwrap())
+                    .fetch_from_arr(["SPECIFIC_BAR", "BAR"])?
+                    .map(|(str_value, var_name)| {
+                        // TODO: add a way to use something different than `from_str`
+                        u32::from_str(&str_value)
+                            .into_diagnostic()
+                            .wrap_err_with(|| {
+                                miette!(
+                                    "Cannot parse `{}` env variable into a value from str",
+                                    var_name
+                                )
+                            })
+                    })
+                    .transpose()?
             },
         })
     }
@@ -202,33 +240,39 @@ impl Partial for NestedPartial {
         }
     }
 
-    fn resolve(self) -> Result<Self::Resolved, ResolveError> {
-        // TODO: collect all missing field in a bulk
+    fn resolve(self) -> Result<Self::Resolved, MissingFieldsError> {
+        let mut missing_fields = MissingFieldsError::dummy();
+
+        if self.foo_env.is_none() {
+            missing_fields = missing_fields.add_field("foo_env");
+        }
+
+        missing_fields.result()?;
+
         Ok(Self::Resolved {
-            foo_env: self
-                .foo_env
-                .ok_or(ResolveError::new().with_loc("foo_env"))?,
+            foo_env: self.foo_env.unwrap(),
             bar_env_multiple: self.bar_env_multiple,
         })
     }
 }
 
+// MACRO OUTPUT END
+
 #[test]
-fn success_build_from_toml() {
-    const input: &str = r#"
+fn success_build_from_toml() -> Result<(), Report> {
+    const INPUT: &str = r#"
     required_baz = false
     "#;
 
-    let partial = <Sample as HasPartial>::Partial::default()
-        .merge(toml::from_str(input).unwrap())
-        .merge(
-            <Sample as HasPartial>::Partial::from_env(
-                &TestEnv::new().add("FOO", "SELECT foo FROM env"),
-            )
-            .unwrap(),
-        )
+    let partial = <Sample as HasPartial>::Partial::new()
+        .merge(toml::from_str(INPUT).unwrap())
+        .merge(<Sample as HasPartial>::Partial::from_env(
+            &TestEnv::new().add("FOO", "SELECT foo FROM env"),
+        )?)
         .resolve()
-        .unwrap();
+        .into_diagnostic()?;
 
     dbg!(&partial);
+
+    Ok(())
 }

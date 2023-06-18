@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use totonoeru::env::EnvProvider;
+use totonoeru::{env::EnvProvider, miette::Report};
 
 pub struct TestEnv {
     map: HashMap<String, String>,
@@ -20,9 +20,7 @@ impl TestEnv {
 }
 
 impl EnvProvider for TestEnv {
-    type FetchError = ();
-
-    fn fetch(&self, key: impl AsRef<str>) -> Result<Option<String>, Self::FetchError> {
+    fn fetch(&self, key: impl AsRef<str>) -> Result<Option<String>, Report> {
         Ok(self.map.get(key.as_ref()).cloned())
     }
 }

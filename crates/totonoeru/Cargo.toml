@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+miette = "5.9.0"
 serde = { version = "1.0.164", features = ["derive"] }
+thiserror = "1.0.40"
 totonoeru_derive = { path = "../totonoeru_derive" }
 
 [dev-dependencies]

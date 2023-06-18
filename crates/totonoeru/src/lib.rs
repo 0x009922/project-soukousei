@@ -1,23 +1,27 @@
 use crate::env::EnvProvider;
+use miette::{Diagnostic, IntoDiagnostic, Report};
 use serde::{Deserialize, Deserializer};
+use std::fmt::{Display, Formatter, Write};
+use thiserror::Error;
 pub use totonoeru_derive::Config;
 
+pub use miette;
+
 pub mod env {
+    use miette::{miette, Report};
     use std::ffi::OsString;
 
     pub trait EnvProvider {
-        type FetchError;
+        fn fetch(&self, key: impl AsRef<str>) -> Result<Option<String>, Report>;
 
-        fn fetch(&self, key: impl AsRef<str>) -> Result<Option<String>, Self::FetchError>;
-
-        fn fetch_from_iter(
+        fn fetch_from_arr<const N: usize>(
             &self,
-            iter: impl Iterator<Item = impl AsRef<str>>,
-        ) -> Result<Option<String>, Self::FetchError> {
-            for var_name in iter {
+            arr: [&'static str; N],
+        ) -> Result<Option<(String, &'static str)>, Report> {
+            for var_name in arr {
                 let found = self.fetch(var_name)?;
-                if found.is_some() {
-                    return Ok(found);
+                if let Some(found) = found {
+                    return Ok(Some((found, var_name)));
                 };
             }
             Ok(None)
@@ -26,10 +30,6 @@ pub mod env {
 
     pub struct StdEnv;
 
-    pub enum StdEnvFetchError {
-        NotUnicode(OsString),
-    }
-
     impl StdEnv {
         pub fn new() -> Self {
             Self
@@ -37,15 +37,20 @@ pub mod env {
     }
 
     impl EnvProvider for StdEnv {
-        type FetchError = StdEnvFetchError;
-
-        fn fetch(&self, key: impl AsRef<str>) -> Result<Option<String>, Self::FetchError> {
+        fn fetch(&self, key: impl AsRef<str>) -> Result<Option<String>, Report> {
             use std::env::{var, VarError};
 
             match var(key.as_ref()) {
                 Ok(x) => Ok(Some(x)),
                 Err(VarError::NotPresent) => Ok(None),
-                Err(VarError::NotUnicode(os)) => Err(StdEnvFetchError::NotUnicode(os)),
+                Err(VarError::NotUnicode(os)) => {
+                    // TODO: make a special diagnostic for this error
+                    Err(miette!(
+                        "ENV var `{}` is not a valid utf-8 string: {:?}",
+                        key.as_ref(),
+                        os
+                    ))
+                }
             }
         }
     }
@@ -76,10 +81,9 @@ pub trait Partial {
     //     Self: Deserialize<'de>;
 
     /// Construct a partial from environment variables.
-    fn from_env<P, E>(provider: &P) -> Result<Self, E>
+    fn from_env(provider: &impl EnvProvider) -> Result<Self, Report>
     where
-        Self: Sized,
-        P: env::EnvProvider<FetchError = E>;
+        Self: Sized;
 
     /// Merge a partial with another partial.
     ///
@@ -88,7 +92,7 @@ pub trait Partial {
 
     /// "Unwrap" a partial with all required fields presented as actual values instead
     /// of [`Option`]s.
-    fn resolve(self) -> Result<Self::Resolved, ResolveError>;
+    fn resolve(self) -> Result<Self::Resolved, MissingFieldsError>;
 
     // /// Shorthand for parsing the same partial ([`Self::parse`]) and merging the result
     // /// ([`Self::merge`]).
@@ -111,6 +115,10 @@ pub trait Partial {
     // }
 }
 
+pub trait HasPartial {
+    type Partial: Partial<Resolved = Self>;
+}
+
 /// By default, all partial fields are options or nested partials. This implementation
 /// is a stub for any [`Option`].
 impl<T> Partial for Option<T> {
@@ -124,10 +132,9 @@ impl<T> Partial for Option<T> {
         None
     }
 
-    fn from_env<P, E>(_provider: &P) -> Result<Self, E>
+    fn from_env(_provider: &impl EnvProvider) -> Result<Self, Report>
     where
         Self: Sized,
-        P: EnvProvider<FetchError = E>,
     {
         Ok(None)
     }
@@ -136,39 +143,116 @@ impl<T> Partial for Option<T> {
         other.or(self)
     }
 
-    fn resolve(self) -> Result<Self::Resolved, ResolveError> {
-        self.ok_or(ResolveError::new())
+    fn resolve(self) -> Result<Self::Resolved, MissingFieldsError> {
+        self.ok_or_else(|| MissingFieldsError::dummy())
     }
 }
 
-pub trait HasPartial {
-    type Partial: Partial<Resolved = Self>;
+#[derive(Error, Debug)]
+pub enum MissingFieldsError {
+    Dummy,
+    Single(&'static str),
+    Multiple(Vec<MissingFieldsError>),
+    Nested {
+        loc: &'static str,
+        deeper: Box<MissingFieldsError>,
+    }, // fields: Vec<&'static str>,
 }
 
-pub struct ParseError;
+// #[derive(Error, Debug, Diagnostic)]
+// struct MissingFieldsErrorDiagnostic {
+//     paths: Vec<Vec<&'static str>>,
+// }
 
-#[derive(Debug)]
-pub struct ResolveError {
-    pub path: Vec<&'static str>,
-}
-
-impl ResolveError {
-    pub fn new() -> Self {
-        Self { path: Vec::new() }
-    }
-
-    pub fn with_loc(mut self, loc: &'static str) -> Self {
-        self.path.push(loc);
-        self
-    }
-}
-
-pub trait ResolveErrorResultExt {
-    fn with_loc(self, loc: &'static str) -> Self;
-}
-
-impl<T> ResolveErrorResultExt for Result<T, ResolveError> {
-    fn with_loc(self, loc: &'static str) -> Self {
-        self.map_err(|err| err.with_loc(loc))
+impl Display for MissingFieldsError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Missing required fields: bla bla")
     }
 }
+
+impl<T> IntoDiagnostic<T, MissingFieldsError> for MissingFieldsError {
+    fn into_diagnostic(self) -> Result<T, Report> {
+        todo!()
+    }
+}
+
+impl MissingFieldsError {
+    /// Empty missing fields accumulator
+    pub fn dummy() -> Self {
+        Self::dummy()
+    }
+
+    pub fn add_field(mut self, loc: &'static str) -> Self {
+        self.concat(Self::Single(loc))
+    }
+
+    pub fn nest(self, loc: &'static str, other: Self) -> Self {
+        self.concat(Self::Nested {
+            loc,
+            deeper: Box::new(other),
+        })
+    }
+
+    /// `Ok(())` if empty, `Err(Self)` otherwise
+    pub fn result(self) -> Result<(), Self> {
+        todo!()
+    }
+
+    fn concat(mut self, other: Self) -> Self {
+        match self {
+            Self::Multiple(mut vec) => {
+                vec.push(other);
+                Self::Multiple(vec)
+            }
+            not_multiple => Self::Multiple(vec![not_multiple, other]),
+        }
+    }
+}
+
+// #[derive(Debug)]
+// pub enum MissingFields {
+//     Single(MissingField),
+//     Multiple(Vec<MissingField>),
+// }
+//
+// impl MissingFields {
+//     pub fn multiple(fields: Vec<MissingField>) -> Self {
+//         Self::Multiple(fields)
+//     }
+// }
+//
+// #[derive(Debug)]
+// pub struct MissingField {
+//     path: Vec<&'static str>,
+// }
+//
+// impl MissingField {
+//     pub fn named(loc: &'static str) -> Self {
+//         Self { path: vec![loc] }
+//     }
+//
+//     pub fn anonymous() -> Self {
+//         Self { path: Vec::new() }
+//     }
+//
+//     pub fn nest(mut self, loc: &'static str) -> Self {
+//         self.path.push(loc);
+//         self
+//     }
+// }
+//
+// impl From<MissingField> for MissingFields {
+//     fn from(value: MissingField) -> Self {
+//         Self::Single(value)
+//     }
+// }
+//
+// pub trait MissingFieldResultExt {
+//     fn nest(self, loc: &'static str) -> Self;
+// }
+//
+// impl<T> MissingFieldResultExt for Result<T, MissingField> {
+//     fn nest(self, loc: &'static str) -> Self {
+//         self.map_err(|err| err.nest(loc))
+//     }
+// }
