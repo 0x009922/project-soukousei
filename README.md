@@ -1,4 +1,4 @@
-# Project totonoeru (?) (wip)
+# Project totonoeru (? or soukousei ? or ? ?) (wip)
 
 > 整える「ととの・える」(totonoeru) - to put in order; to get ready; to prepare; to adjust.
 > 
@@ -47,13 +47,13 @@ struct Nested {
 const DEFAULT_NESTED_FOO: u32 = 2_u32.pow(19);
 ```
 
-> **Notes:**
-> 
-> - I don't really like `param` attribute name. Maybe `partial` instead?
-> - `default = "<...>"` simply inlines whatever is written in `<...>` into a field initialisation
-> - `default` inlines `Default::default()`
-> - `partial` tells the macro that `Nested` implements `trait HasPartial` (see below), and that each method (see below) should be delegated to that nested partial
-> - `partial = "CustomPartial"` tells the macro the field's type in the generated partial should be `CustomPartial`
+**Notes:**
+
+- I don't really like `param` attribute name. Maybe `partial` instead?
+- `default = "<...>"` simply inlines whatever is written in `<...>` into a field initialisation
+- `default` inlines `Default::default()`
+- `partial` tells the macro that `Nested` implements `trait HasPartial` (see below), and that each method (see below) should be delegated to that nested partial
+- `partial = "CustomPartial"` tells the macro the field's type in the generated partial should be `CustomPartial`
 
 This macro will generate a partial for `Config` (and for `Nested`):
 
@@ -79,11 +79,11 @@ impl HasPartial for Config {
 }
 ```
 
-> **Notes:**
-> 
-> - `nested` field **is not** wrapped into `Option<..>`
-> - Hmm, now each field is wrapped into `Option<T>`. However, I can create a `struct DefaultPartial<T>` (or `DummyPartial<T>`, or `SimplePartial<T>`), so the macro will be able to work with ALL fields as nested partials. It simplifies macro, but makes generated code more verbose and there _might be_ a possibility that the produced code will have some runtime overhead, but I think the compiler might optimise it away. TODO: make research in godbolt.
-> - `HasPartial` marker trait 
+**Notes:**
+
+- `nested` field **is not** wrapped into `Option<..>`
+- Hmm, now each field is wrapped into `Option<T>`. However, I can create a `struct DefaultPartial<T>` (or `DummyPartial<T>`, or `SimplePartial<T>`), so the macro will be able to work with ALL fields as nested partials. It simplifies macro, but makes generated code more verbose and there _might be_ a possibility that the produced code will have some runtime overhead, but I think the compiler might optimise it away. TODO: make research in godbolt.
+- `HasPartial` marker trait 
 
 Here we came to the `trait Partial`:
 
@@ -113,11 +113,11 @@ pub trait Partial {
 }
 ```
 
-> **Notes:**
-> 
-> - Having `Partial::default` instead of `Default::default` is needed for nesting partials into each other. Although, `trait Partial` might be a super trait of `trait Default`, I am not sure in general that `trait Default` semantics are applicable to `Partial::default`. I would call the latter as `Partial::with_defaults`, while `Default::default` is more like `Partial::new()`, which produces an empty partial.
-> - My inner perfectionist tells me to move `from_env` into a separate trait, because it is "not generic enough". It forces `trait Partial`'s binding with ENV semantics, which "might not be always the case". Can `from_env` implementation be toggled with `#[param(from_env)]` attribute? Or... make a default implementation of `from_env` which simply returns `Ok(Self::new())`? Furthermore, toggle `from_env` with a crate-level feature flag, like Clap does it?
-> - `from_env` and `resolve` emit batch errors for all fields (and nested partials) at once. (wip) 
+**Notes:**
+
+- Having `Partial::default` instead of `Default::default` is needed for nesting partials into each other. Although, `trait Partial` might be a super trait of `trait Default`, I am not sure in general that `trait Default` semantics are applicable to `Partial::default`. I would call the latter as `Partial::with_defaults`, while `Default::default` is more like `Partial::new()`, which produces an empty partial.
+- My inner perfectionist tells me to move `from_env` into a separate trait, because it is "not generic enough". It forces `trait Partial`'s binding with ENV semantics, which "might not be always the case". Can `from_env` implementation be toggled with `#[param(from_env)]` attribute? Or... make a default implementation of `from_env` which simply returns `Ok(Self::new())`? Furthermore, toggle `from_env` with a crate-level feature flag, like Clap does it?
+- `from_env` and `resolve` emit batch errors for all fields (and nested partials) at once. (wip) 
 
 The macro does not have much logic by itself. It generates a boilerplate which is based on the main library
 
