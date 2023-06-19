@@ -4,9 +4,9 @@ mod util;
 
 use miette::{miette, IntoDiagnostic, Report, WrapErr};
 use serde::{Deserialize, Serialize};
+use soukousei::{env::EnvProvider, HasPartial, MissingFieldsError, Partial};
 use std::collections::HashMap;
 use std::str::FromStr;
-use totonoeru::{env::EnvProvider, HasPartial, MissingFieldsError, Partial};
 use util::TestEnv;
 
 #[derive(Debug)]
@@ -264,15 +264,15 @@ fn success_build_from_toml() -> Result<(), Report> {
     required_baz = false
     "#;
 
-    let partial = <Sample as HasPartial>::Partial::new()
+    let sample = <Sample as HasPartial>::Partial::new()
         .merge(toml::from_str(INPUT).unwrap())
         .merge(<Sample as HasPartial>::Partial::from_env(
-            &TestEnv::new().add("FOO", "SELECT foo FROM env"),
+            soukousei::env::StdEnv::new() & TestEnv::new().add("FOO", "SELECT foo FROM env"),
         )?)
         .resolve()
         .into_diagnostic()?;
 
-    dbg!(&partial);
+    dbg!(&sample);
 
     Ok(())
 }

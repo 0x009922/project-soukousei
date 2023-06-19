@@ -1,5 +1,5 @@
+use soukousei::{env::EnvProvider, miette::Report};
 use std::collections::HashMap;
-use totonoeru::{env::EnvProvider, miette::Report};
 
 pub struct TestEnv {
     map: HashMap<String, String>,

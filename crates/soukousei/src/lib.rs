@@ -3,7 +3,6 @@ use miette::{Diagnostic, IntoDiagnostic, Report};
 use serde::{Deserialize, Deserializer};
 use std::fmt::{Display, Formatter, Write};
 use thiserror::Error;
-pub use totonoeru_derive::Config;
 
 pub use miette;
 

@@ -1,10 +1,10 @@
 mod util;
 
+use soukousei::env::EnvProvider;
+use soukousei::Config;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use toml::toml;
-use totonoeru::env::EnvProvider;
-use totonoeru::Config;
 use util::TestEnv;
 
 #[derive(Config)]
