@@ -10,6 +10,8 @@ use std::str::FromStr;
 use util::TestEnv;
 
 #[derive(Debug)]
+// #[derive(Layer)]
+// #[layer(default, env)]
 struct Sample {
     // #[param(default = "100")]
     with_default_foo: u32,
@@ -28,15 +30,17 @@ struct Sample {
 #[derive(Debug, Serialize, Deserialize)]
 struct CustomPartial(Option<u32>);
 
+impl Default for CustomPartial {
+    fn default() -> Self {
+        Self(Some(100))
+    }
+}
+
 impl Layer for CustomPartial {
     type Complete = u32;
 
     fn new() -> Self {
         Self(None)
-    }
-
-    fn default() -> Self {
-        Self(Some(100))
     }
 
     // fn from_env(_provider: &impl EnvProvider) -> Result<Self, Report>
@@ -65,11 +69,11 @@ impl Layer for CustomPartial {
 // MACRO OUTPUT
 
 impl HasLayer for Sample {
-    type Layer = SamplePartial;
+    type Layer = SampleLayer;
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct SamplePartial {
+struct SampleLayer {
     with_default_foo: Option<u32>,
     optional_bar: Option<String>,
     required_baz: Option<bool>,
@@ -79,7 +83,19 @@ struct SamplePartial {
     custom: CustomPartial,
 }
 
-impl Layer for SamplePartial {
+impl Default for SampleLayer {
+    fn default() -> Self {
+        Self {
+            with_default_foo: Some(100),
+            optional_bar: None,
+            required_baz: None,
+            nested: Default::default(),
+            custom: Default::default(),
+        }
+    }
+}
+
+impl Layer for SampleLayer {
     type Complete = Sample;
 
     fn new() -> Self {
@@ -92,16 +108,6 @@ impl Layer for SamplePartial {
         }
     }
 
-    fn default() -> Self {
-        Self {
-            with_default_foo: Some(100),
-            optional_bar: None,
-            required_baz: None,
-            nested: Layer::default(),
-            custom: Layer::default(),
-        }
-    }
-    //
     // fn from_env(provider: &impl EnvProvider) -> Result<Self, Report>
     // where
     //     Self: Sized,
@@ -170,7 +176,8 @@ impl Layer for SamplePartial {
 
 // MACRO OUTPUT END
 
-// #[derive(Config)]
+// #[derive(Layer)]
+// #[layer(default, env)]
 #[derive(Debug)]
 struct Nested {
     // #[param(env = "FOO", default = r#""I am default foo!".to_owned()"#)]
@@ -182,28 +189,30 @@ struct Nested {
 // MACRO OUTPUT
 
 impl HasLayer for Nested {
-    type Layer = NestedPartial;
+    type Layer = NestedLayer;
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct NestedPartial {
+struct NestedLayer {
     foo_env: Option<String>,
     bar_env_multiple: Option<u32>,
 }
 
-impl Layer for NestedPartial {
+impl Default for NestedLayer {
+    fn default() -> Self {
+        Self {
+            foo_env: Some("I am default foo!".to_owned()),
+            bar_env_multiple: None,
+        }
+    }
+}
+
+impl Layer for NestedLayer {
     type Complete = Nested;
 
     fn new() -> Self {
         Self {
             foo_env: None,
-            bar_env_multiple: None,
-        }
-    }
-
-    fn default() -> Self {
-        Self {
-            foo_env: Some("I am default foo!".to_owned()),
             bar_env_multiple: None,
         }
     }
