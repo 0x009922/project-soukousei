@@ -25,7 +25,7 @@ struct Sample {
     // same as
     // #[layer(nested = "<Nested as HasLayer>::Layer")
     nested: Nested,
-    // #[layer(nested = "CustomPartial")]
+    // #[layer(nested = "CustomLayer")]
     custom: u32,
     // TODO: use case with partial through a final type newtype HasType
 }
@@ -36,7 +36,7 @@ struct CustomLayer(Option<u32>);
 
 impl Default for CustomLayer {
     fn default() -> Self {
-        Self(Some(100))
+        Self(None)
     }
 }
 
@@ -70,7 +70,7 @@ impl Layer for CustomLayer {
     }
 
     fn complete(self) -> Result<Self::Complete, CompleteError> {
-        self.0.ok_or(CompleteError::MissingSelf)
+        self.0.ok_or(CompleteError::MissingData)
     }
 }
 
@@ -185,6 +185,8 @@ struct Nested {
     foo_env: String,
     // #[param(env = ["SPECIFIC_BAR", "BAR"])]
     bar_env_multiple: Option<u32>,
+    // #[layer(nested = "CustomLayer")]
+    custom_nested: u32,
 }
 
 // MACRO OUTPUT
@@ -197,6 +199,7 @@ impl HasLayer for Nested {
 struct NestedLayer {
     foo_env: Option<String>,
     bar_env_multiple: Option<u32>,
+    custom_nested: CustomLayer,
 }
 
 impl Default for NestedLayer {
@@ -204,6 +207,7 @@ impl Default for NestedLayer {
         Self {
             foo_env: Some("I am default foo!".to_owned()),
             bar_env_multiple: None,
+            custom_nested: CustomLayer::default(),
         }
     }
 }
@@ -230,11 +234,15 @@ impl FromEnv for NestedLayer {
             ),
         );
 
+        let (custom_nested, errors) =
+            errors.nest_if_err(FromEnv::from_env(provider), "custom_nested");
+
         errors.result()?;
 
         Ok(Self {
             foo_env,
             bar_env_multiple,
+            custom_nested: custom_nested.unwrap(),
         })
     }
 }
@@ -246,6 +254,7 @@ impl Layer for NestedLayer {
         Self {
             foo_env: None,
             bar_env_multiple: None,
+            custom_nested: Layer::new(),
         }
     }
 
@@ -253,6 +262,7 @@ impl Layer for NestedLayer {
         Self {
             foo_env: other.foo_env.or(self.foo_env),
             bar_env_multiple: other.bar_env_multiple.or(self.bar_env_multiple),
+            custom_nested: Layer::merge(self.custom_nested, other.custom_nested),
         }
     }
 
@@ -261,11 +271,17 @@ impl Layer for NestedLayer {
 
         let errors = errors.add_if_none(&self.foo_env, "foo_env");
 
+        let (custom_nested, errors) = self
+            .custom_nested
+            .complete()
+            .nest_if_err(errors, "custom_nested");
+
         errors.result()?;
 
         Ok(Self::Complete {
             foo_env: self.foo_env.unwrap(),
             bar_env_multiple: self.bar_env_multiple,
+            custom_nested: custom_nested.unwrap(),
         })
     }
 }
@@ -283,9 +299,8 @@ fn success_build_from_toml() -> Result<(), Report> {
         // .merge(<Sample as HasLayer>::Layer::from_env(
         //     soukousei::env::StdEnv::new() & TestEnv::new().add("FOO", "SELECT foo FROM env"),
         // )?)
-        .complete()
-        .map_err(|err| miette!("complete err: {err:?}"))?;
-    // .map_err(|x| x.into_diagnostic())?;
+        .complete_and_report()
+        .wrap_err("Failed to build Sample configuration")?;
 
     dbg!(&sample);
 

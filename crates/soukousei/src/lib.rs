@@ -35,6 +35,8 @@ pub mod env {
     }
 
     pub trait FromEnv {
+        // FIXME: returning "multiple fields error" is not a general case. Implementor should be
+        //        able to return any other error as well, including some report. Or is it?
         fn from_env(
             provider: &impl EnvProvider,
         ) -> Result<Self, MultipleFieldsError<FieldFromEnvError>>
@@ -134,11 +136,60 @@ pub trait Layer {
     fn merge(self, other: Self) -> Self;
 
     fn complete(self) -> Result<Self::Complete, CompleteError>;
+
+    fn complete_and_report(self) -> Result<Self::Complete, CompleteErrorDiagnostic>
+    where
+        Self: Sized,
+    {
+        self.complete().map_err(From::from)
+    }
+}
+
+#[derive(Debug, Error, Diagnostic)]
+pub enum CompleteErrorDiagnostic {
+    #[error("Missing data")]
+    MissingData,
+    #[error("Ooops, there are missing fields")]
+    MissingFields {
+        // TODO display the whole source string with labels attached to a whole config with missing fields?
+        #[related]
+        fields: Vec<MissingFieldErrorDiagnostic>,
+    },
+}
+
+impl From<CompleteError> for CompleteErrorDiagnostic {
+    fn from(value: CompleteError) -> Self {
+        match value {
+            CompleteError::MissingData => CompleteErrorDiagnostic::MissingData,
+            CompleteError::MissingFields(MultipleFieldsError {
+                fields: FieldsAcc { paths },
+            }) => {
+                let fields = paths
+                    .into_iter()
+                    .map(|WithPath { mut path, .. }| {
+                        path.iter()
+                            .rev()
+                            .map(|x| (*x).to_owned())
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    })
+                    .map(|path| MissingFieldErrorDiagnostic { path })
+                    .collect();
+                Self::MissingFields { fields }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("`{path}`: missing field")]
+pub struct MissingFieldErrorDiagnostic {
+    path: String,
 }
 
 #[derive(Debug)]
 pub enum CompleteError {
-    MissingSelf,
+    MissingData,
     MissingFields(MultipleFieldsError<MissingFieldError>),
 }
 
@@ -170,7 +221,7 @@ impl<T> ResultExt<T, MissingFieldError> for Result<T, CompleteError> {
                         errors.fields.nest(acc.fields, loc);
                         errors
                     }
-                    CompleteError::MissingSelf => errors.add(MissingFieldError, loc),
+                    CompleteError::MissingData => errors.add(MissingFieldError, loc),
                 };
                 (None, errors)
             }
