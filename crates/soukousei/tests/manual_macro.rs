@@ -4,7 +4,11 @@ mod util;
 
 use miette::{miette, IntoDiagnostic, Report, WrapErr};
 use serde::{Deserialize, Serialize};
-use soukousei::{env::EnvProvider, HasLayer, Layer, MissingFieldsError};
+use soukousei::env::{FieldFromEnvError, FromEnv};
+use soukousei::{
+    env::EnvProvider, CompleteError, HasLayer, Layer, MissingFieldError, MultipleFieldsError,
+    ResultExt,
+};
 use std::collections::HashMap;
 use std::str::FromStr;
 use util::TestEnv;
@@ -13,42 +17,46 @@ use util::TestEnv;
 // #[derive(Layer)]
 // #[layer(default, env)]
 struct Sample {
-    // #[param(default = "100")]
+    // #[layer(default = "100")]
     with_default_foo: u32,
     optional_bar: Option<String>,
     required_baz: bool,
-    // #[param(partial)]
+    // #[layer(nested)]
     // same as
-    // #[param(partial = "<Nested as HasPartial>::Partial")
+    // #[layer(nested = "<Nested as HasLayer>::Layer")
     nested: Nested,
-    // #[param(partial = "CustomPartial")]
+    // #[layer(nested = "CustomPartial")]
     custom: u32,
     // TODO: use case with partial through a final type newtype HasType
 }
 
 // we only want to override how merge works
 #[derive(Debug, Serialize, Deserialize)]
-struct CustomPartial(Option<u32>);
+struct CustomLayer(Option<u32>);
 
-impl Default for CustomPartial {
+impl Default for CustomLayer {
     fn default() -> Self {
         Self(Some(100))
     }
 }
 
-impl Layer for CustomPartial {
+impl FromEnv for CustomLayer {
+    fn from_env(
+        _provider: &impl EnvProvider,
+    ) -> Result<Self, MultipleFieldsError<FieldFromEnvError>>
+    where
+        Self: Sized,
+    {
+        Ok(Self::new())
+    }
+}
+
+impl Layer for CustomLayer {
     type Complete = u32;
 
     fn new() -> Self {
         Self(None)
     }
-
-    // fn from_env(_provider: &impl EnvProvider) -> Result<Self, Report>
-    // where
-    //     Self: Sized,
-    // {
-    //     Ok(Self::new())
-    // }
 
     fn merge(self, other: Self) -> Self {
         let inner = match (self.0, other.0) {
@@ -61,8 +69,8 @@ impl Layer for CustomPartial {
         Self(inner)
     }
 
-    fn complete(self) -> Result<Self::Complete, MissingFieldsError> {
-        self.0.ok_or_else(|| MissingFieldsError::dummy())
+    fn complete(self) -> Result<Self::Complete, CompleteError> {
+        self.0.ok_or(CompleteError::MissingSelf)
     }
 }
 
@@ -80,7 +88,7 @@ struct SampleLayer {
     #[serde(default = "Layer::new")]
     nested: <Nested as HasLayer>::Layer,
     #[serde(default = "Layer::new")]
-    custom: CustomPartial,
+    custom: CustomLayer,
 }
 
 impl Default for SampleLayer {
@@ -92,6 +100,29 @@ impl Default for SampleLayer {
             nested: Default::default(),
             custom: Default::default(),
         }
+    }
+}
+
+impl FromEnv for SampleLayer {
+    fn from_env(provider: &impl EnvProvider) -> Result<Self, MultipleFieldsError<FieldFromEnvError>>
+    where
+        Self: Sized,
+    {
+        let errors = MultipleFieldsError::new();
+
+        let (nested, errors) = errors.nest_if_err(FromEnv::from_env(provider), "nested");
+
+        let (custom, errors) = errors.nest_if_err(FromEnv::from_env(provider), "custom");
+
+        errors.result()?;
+
+        Ok(Self {
+            with_default_foo: None,
+            optional_bar: None,
+            required_baz: None,
+            nested: nested.unwrap(),
+            custom: custom.unwrap(),
+        })
     }
 }
 
@@ -108,21 +139,6 @@ impl Layer for SampleLayer {
         }
     }
 
-    // fn from_env(provider: &impl EnvProvider) -> Result<Self, Report>
-    // where
-    //     Self: Sized,
-    // {
-    //     // TODO: collect errors in a batch?
-    //
-    //     Ok(Self {
-    //         with_default_foo: None,
-    //         optional_bar: None,
-    //         required_baz: None,
-    //         nested: Layer::from_env(provider)?,
-    //         custom: Layer::from_env(provider)?,
-    //     })
-    // }
-
     fn merge(self, other: Self) -> Self {
         Self {
             with_default_foo: other.with_default_foo.or(self.with_default_foo),
@@ -133,35 +149,20 @@ impl Layer for SampleLayer {
         }
     }
 
-    fn complete(self) -> Result<Self::Complete, MissingFieldsError> {
-        let mut missing_fields = MissingFieldsError::dummy();
+    fn complete(self) -> Result<Self::Complete, CompleteError> {
+        let errors = MultipleFieldsError::new();
 
-        if self.with_default_foo.is_none() {
-            missing_fields.add_field("with_default_foo");
-        }
+        let errors = errors.add_if_none(&self.with_default_foo, "with_default_foo");
 
-        if self.required_baz.is_none() {
-            missing_fields.add_field("required_baz")
-        }
+        let errors = errors.add_if_none(&self.required_baz, "required_baz");
 
-        // TODO: replace with a helper method
-        let nested = match self.nested.complete() {
-            Ok(value) => Some(value),
-            Err(err) => {
-                missing_fields.nest("nested", err);
-                None
-            }
-        };
+        use soukousei::ResultExt;
 
-        let custom = match self.custom.complete() {
-            Ok(value) => Some(value),
-            Err(err) => {
-                missing_fields.nest("custom", err);
-                None
-            }
-        };
+        let (nested, errors) = self.nested.complete().nest_if_err(errors, "nested");
 
-        missing_fields.result()?;
+        let (custom, errors) = self.custom.complete().nest_if_err(errors, "custom");
+
+        errors.result()?;
 
         Ok(Self::Complete {
             // TODO: use `expect` in macro code
@@ -207,6 +208,37 @@ impl Default for NestedLayer {
     }
 }
 
+impl FromEnv for NestedLayer {
+    fn from_env(provider: &impl EnvProvider) -> Result<Self, MultipleFieldsError<FieldFromEnvError>>
+    where
+        Self: Sized,
+    {
+        let errors = MultipleFieldsError::new();
+
+        let (foo_env, errors) = errors.add_if_err(
+            "foo_env",
+            provider.fetch_and_parse("FOO", soukousei::env::default_env_parse),
+        );
+
+        const BAR_ENV_MULTIPLE_VARIABLES: [&'_ str; 2] = ["SPECIFIC_BAR", "BAR"];
+
+        let (bar_env_multiple, errors) = errors.add_if_err(
+            "bar_env_multiple",
+            provider.try_fetch_multiple_and_parse(
+                BAR_ENV_MULTIPLE_VARIABLES.iter().map(|x| *x),
+                soukousei::env::default_env_parse,
+            ),
+        );
+
+        errors.result()?;
+
+        Ok(Self {
+            foo_env,
+            bar_env_multiple,
+        })
+    }
+}
+
 impl Layer for NestedLayer {
     type Complete = Nested;
 
@@ -217,32 +249,6 @@ impl Layer for NestedLayer {
         }
     }
 
-    // fn from_env(provider: &impl EnvProvider) -> Result<Self, Report>
-    // where
-    //     Self: Sized,
-    // {
-    //     Ok(Self {
-    //         // TODO: specify path to variables as well
-    //         foo_env: provider.fetch("FOO")?,
-    //         bar_env_multiple: {
-    //             provider
-    //                 .fetch_from_arr(["SPECIFIC_BAR", "BAR"])?
-    //                 .map(|(str_value, var_name)| {
-    //                     // TODO: add a way to use something different than `from_str`
-    //                     u32::from_str(&str_value)
-    //                         .into_diagnostic()
-    //                         .wrap_err_with(|| {
-    //                             miette!(
-    //                                 "Cannot parse `{}` env variable into a value from str",
-    //                                 var_name
-    //                             )
-    //                         })
-    //                 })
-    //                 .transpose()?
-    //         },
-    //     })
-    // }
-
     fn merge(self, other: Self) -> Self {
         Self {
             foo_env: other.foo_env.or(self.foo_env),
@@ -250,14 +256,12 @@ impl Layer for NestedLayer {
         }
     }
 
-    fn complete(self) -> Result<Self::Complete, MissingFieldsError> {
-        let mut missing_fields = MissingFieldsError::dummy();
+    fn complete(self) -> Result<Self::Complete, CompleteError> {
+        let errors = MultipleFieldsError::new();
 
-        if self.foo_env.is_none() {
-            missing_fields.add_field("foo_env");
-        }
+        let errors = errors.add_if_none(&self.foo_env, "foo_env");
 
-        missing_fields.result()?;
+        errors.result()?;
 
         Ok(Self::Complete {
             foo_env: self.foo_env.unwrap(),
@@ -271,7 +275,7 @@ impl Layer for NestedLayer {
 #[test]
 fn success_build_from_toml() -> Result<(), Report> {
     const INPUT: &str = r#"
-    required_baz = false
+    # required_baz = false
     "#;
 
     let sample = <Sample as HasLayer>::Layer::default()
@@ -280,7 +284,8 @@ fn success_build_from_toml() -> Result<(), Report> {
         //     soukousei::env::StdEnv::new() & TestEnv::new().add("FOO", "SELECT foo FROM env"),
         // )?)
         .complete()
-        .into_diagnostic()?;
+        .map_err(|err| miette!("complete err: {err:?}"))?;
+    // .map_err(|x| x.into_diagnostic())?;
 
     dbg!(&sample);
 

@@ -8,7 +8,10 @@ miette = "5.9.0"
 serde = { version = "1.0.164", features = ["derive"] }
 thiserror = "1.0.40"
 soukousei_derive = { path = "../soukousei_derive" }
+either = "1.8.1"
 
 [dev-dependencies]
 toml = "0.7.4"
+miette = { version = "5.9.0", features = ["fancy"] }
+
 
